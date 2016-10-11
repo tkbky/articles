@@ -149,29 +149,7 @@ end
 
 Now, if you try to request without the `Authorization` inside the header, it will fail with status `401 Unauthorized`.
 
-So, how do we add `Authorization` inside the request header while using `JsonApiClient::Resource`? In this case, we'll need a faraday middleware to inject the user's `email` and `auth_token` into request that requires authentication. The author of `JsonApiClient` has an example for this. Refer [this issue](https://github.com/chingor13/json_api_client/issues/64#issuecomment-116761917) for more details. The implementation of the faraday middleware basically looks like this:
-
-```ruby
-# app/middleware/token_auth_middleware.rb
-
-class TokenAuthMiddleware < Faraday::Middleware
-
-  attr_reader :klass, :app
-
-  def initialize(app, klass)
-    super(app)
-    @klass = klass
-  end
-
-  def call(environment)
-    environment[:request_headers]['Authorization'] = "Token token=#{@klass.auth_token}, email=#{@klass.email}"
-    @app.call(environment)
-  end
-
-end
-```
-
-Then inside the `BaseResource`, we need to pass the `auth_token` and `email` to the middleware.
+So, how do we add `Authorization` inside the request header while using `JsonApiClient::Resource`? It's simple. `JsonApiClient` provides a very useful method called `#with_headers` that allows us to customize the request's header. By calling `#with_headers` on `BaseResource`, it will set the `BaseResource`'s `custom_headers`.
 
 ```ruby
 # app/model/base_resource.rb
@@ -180,39 +158,15 @@ class BaseResource < JsonApiClient::Resource
 
   ...
 
-  class << self
-
-    attr_writer :email, :auth_token
-
-    def email
-      @email ||= begin
-        superclass.email if superclass.respond_to?(:email)
-      end
+  # Because we are going to customize only the `BaseResource`'s `custom_headers` in `ApplicationController`,
+  # which will be used by its subclasses as well, hence this:
+  def self.inherited(subklass)
+    subklass.class_eval do
+       def self.custom_headers
+         BaseResource.custom_headers
+       end
     end
-
-    def auth_token
-      @auth_token ||= begin
-        superclass.auth_token if superclass.respond_to?(:auth_token)
-      end
-    end
-
-    def connection
-      super.tap do |conn|
-        conn.use TokenAuthMiddleware, self
-      end
-    end
-
-    def authenticate_with(email, auth_token)
-      self.email = email
-      self.auth_token = auth_token
-      yield
-    ensure
-      self.email = nil
-      self.auth_token = nil
-    end
-
   end
-
 end
 ```
 
@@ -293,9 +247,13 @@ class ApplicationController < ActionController::Base
   private
 
   def authenticate_user!
-    BaseResource.authenticate_with(session[:email], session[:auth_token]) do
+    BaseResource.with_headers(authorization_header) do
       yield
     end
+  end
+
+  def authorization_header
+    { Authorization: "Token token=#{session[:auth_token]}, email=#{session[:email]}" }
   end
 
   def not_authorized!
